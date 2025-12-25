@@ -9,5 +9,3 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 print(CHATGPT_TOKEN)
 print(BOT_TOKEN)
-
-
