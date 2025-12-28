@@ -1,12 +1,14 @@
 import logging
 from random import choice
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from config import CHATGPT_TOKEN
+from config import (CHATGPT_TOKEN, LANGUAGES)
 from gpt import ChatGPTService
 from utils import (send_image, send_text, load_message, show_main_menu, load_prompt, send_text_buttons)
+
+
 
 chatgpt_service = ChatGPTService(CHATGPT_TOKEN)
 
@@ -28,6 +30,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'random': 'Дізнатися випадковий факт',
             'gpt': 'Запитати ChatGPT',
             'talk': 'Діалог з відомою особистістю',
+            'translate': 'Перекладач текстів',
         }
     )
 
@@ -77,6 +80,71 @@ async def gpt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = update.message.text
     conversation_state = context.user_data.get("conversation_state")
+
+    async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        from config import LANGUAGES
+
+        message_text = update.message.text
+        conversation_state = context.user_data.get("conversation_state")
+
+        # ДОДАЙТЕ ЦЕЙ БЛОК ДЛЯ ПЕРЕКЛАДУ
+        if conversation_state == "translate":
+            target_lang = context.user_data.get("target_language")
+            if not target_lang:
+                await send_text(update, context, "Спочатку оберіть мову для перекладу!")
+                return
+
+            waiting_message = await send_text(update, context, "⏳ Перекладаю...")
+
+            try:
+                # Промпт для перекладу
+                prompt = f"You are a professional translator. Translate the following text to {LANGUAGES[target_lang]}. Provide only the translation without any additional comments."
+
+                # Використовуємо ваш chatgpt_service
+                response = await chatgpt_service.send_question(
+                    prompt_text=prompt,
+                    message_text=message_text
+                )
+
+                # Створюємо кнопки для зміни мови
+                keyboard = []
+                other_langs = [lang for lang in LANGUAGES.keys() if lang != target_lang]
+                for i in range(0, len(other_langs), 2):
+                    row = []
+                    for code in other_langs[i:i + 2]:
+                        row.append(
+                            InlineKeyboardButton(
+                                LANGUAGES[code],
+                                callback_data=f"change_{code}"
+                            )
+                        )
+                    keyboard.append(row)
+
+                keyboard.append([
+                    InlineKeyboardButton("❌ Закінчити", callback_data="finish_translate")
+                ])
+
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"📝 *Переклад ({LANGUAGES[target_lang]}):*\n\n{response}\n\n"
+                         f"━━━━━━━━━━━━━━━\nНадішліть інший текст або оберіть дію:",
+                    reply_markup=reply_markup,
+                    parse_mode="Markdown"
+                )
+
+            except Exception as e:
+                logger.error(f"Помилка при перекладі: {e}")
+                await send_text(update, context, "❌ Помилка при перекладі. Спробуйте ще раз.")
+            finally:
+                await context.bot.delete_message(
+                    chat_id=update.effective_chat.id,
+                    message_id=waiting_message.message_id
+                )
+            return
+
+
     if conversation_state == "gpt":
         waiting_message = await send_text(update, context, "...")
         try:
@@ -211,3 +279,70 @@ async def show_funny_response(update: Update, context: ContextTypes.DEFAULT_TYPE
     """
     full_message = f"{random_response}\n{available_commands}"
     await update.message.reply_text(full_message)
+
+
+async def translate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /translate - запускає режим перекладу"""
+    from config import LANGUAGES
+
+    context.user_data.clear()
+    await send_image(update, context, "start")
+
+    keyboard = []
+    for i in range(0, len(LANGUAGES), 2):
+        row = []
+        items = list(LANGUAGES.items())[i:i + 2]
+        for code, name in items:
+            row.append(InlineKeyboardButton(name, callback_data=f"lang_{code}"))
+        keyboard.append(row)
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="🌍 *Режим перекладача*\n\nОберіть мову, на яку хочете перекладати тексти:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
+
+async def translate_language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Вибір мови для перекладу"""
+    from config import LANGUAGES
+
+    query = update.callback_query
+    await query.answer()
+
+    lang_code = query.data.replace("lang_", "")
+    context.user_data["target_language"] = lang_code
+    context.user_data["conversation_state"] = "translate"
+
+    await query.edit_message_text(
+        f"✅ Обрано мову: *{LANGUAGES[lang_code]}*\n\n"
+        f"Тепер надішліть мені текст для перекладу.",
+        parse_mode="Markdown"
+    )
+
+
+async def translate_change_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Зміна мови або завершення режиму перекладу"""
+    from config import LANGUAGES
+
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "finish_translate":
+        context.user_data.pop("target_language", None)
+        context.user_data.pop("conversation_state", None)
+        await query.edit_message_text(
+            "✅ Режим перекладу завершено.\n\n"
+            "Використовуйте /translate, щоб почати знову."
+        )
+    else:
+        lang_code = query.data.replace("change_", "")
+        context.user_data["target_language"] = lang_code
+        await query.edit_message_text(
+            f"✅ Мову змінено на: *{LANGUAGES[lang_code]}*\n\n"
+            f"Надішліть текст для перекладу.",
+            parse_mode="Markdown"
+        )
