@@ -31,6 +31,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'gpt': 'Запитати ChatGPT',
             'talk': 'Діалог з відомою особистістю',
             'translate': 'Перекладач текстів',
+            'recommend': 'Рекомендації від GPT',
         }
     )
 
@@ -81,68 +82,116 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = update.message.text
     conversation_state = context.user_data.get("conversation_state")
 
-    async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        from config import LANGUAGES
-
-        message_text = update.message.text
-        conversation_state = context.user_data.get("conversation_state")
-
-        # ДОДАЙТЕ ЦЕЙ БЛОК ДЛЯ ПЕРЕКЛАДУ
-        if conversation_state == "translate":
-            target_lang = context.user_data.get("target_language")
-            if not target_lang:
-                await send_text(update, context, "Спочатку оберіть мову для перекладу!")
-                return
-
-            waiting_message = await send_text(update, context, "⏳ Перекладаю...")
-
-            try:
-                # Промпт для перекладу
-                prompt = f"You are a professional translator. Translate the following text to {LANGUAGES[target_lang]}. Provide only the translation without any additional comments."
-
-                # Використовуємо ваш chatgpt_service
-                response = await chatgpt_service.send_question(
-                    prompt_text=prompt,
-                    message_text=message_text
-                )
-
-                # Створюємо кнопки для зміни мови
-                keyboard = []
-                other_langs = [lang for lang in LANGUAGES.keys() if lang != target_lang]
-                for i in range(0, len(other_langs), 2):
-                    row = []
-                    for code in other_langs[i:i + 2]:
-                        row.append(
-                            InlineKeyboardButton(
-                                LANGUAGES[code],
-                                callback_data=f"change_{code}"
-                            )
-                        )
-                    keyboard.append(row)
-
-                keyboard.append([
-                    InlineKeyboardButton("❌ Закінчити", callback_data="finish_translate")
-                ])
-
-                reply_markup = InlineKeyboardMarkup(keyboard)
-
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=f"📝 *Переклад ({LANGUAGES[target_lang]}):*\n\n{response}\n\n"
-                         f"━━━━━━━━━━━━━━━\nНадішліть інший текст або оберіть дію:",
-                    reply_markup=reply_markup,
-                    parse_mode="Markdown"
-                )
-
-            except Exception as e:
-                logger.error(f"Помилка при перекладі: {e}")
-                await send_text(update, context, "❌ Помилка при перекладі. Спробуйте ще раз.")
-            finally:
-                await context.bot.delete_message(
-                    chat_id=update.effective_chat.id,
-                    message_id=waiting_message.message_id
-                )
+    if conversation_state == "translate":
+        target_lang = context.user_data.get("target_language")
+        if not target_lang:
+            await send_text(update, context, "Спочатку оберіть мову для перекладу!")
             return
+
+        waiting_message = await send_text(update, context, "⏳ Перекладаю...")
+
+        try:
+
+            prompt = f"You are a professional translator. Translate the following text to {LANGUAGES[target_lang]}. Provide only the translation without any additional comments."
+
+
+            response = await chatgpt_service.send_question(
+                prompt_text=prompt,
+                message_text=message_text
+            )
+
+            keyboard = []
+            other_langs = [lang for lang in LANGUAGES.keys() if lang != target_lang]
+            for i in range(0, len(other_langs), 2):
+                row = []
+                for code in other_langs[i:i + 2]:
+                    row.append(
+                        InlineKeyboardButton(
+                            LANGUAGES[code],
+                            callback_data=f"change_{code}"
+                        )
+                    )
+                keyboard.append(row)
+
+            keyboard.append([
+                InlineKeyboardButton("❌ Закінчити", callback_data="finish_translate")
+            ])
+
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"📝 *Переклад ({LANGUAGES[target_lang]}):*\n\n{response}\n\n"
+                         f"━━━━━━━━━━━━━━━\nНадішліть інший текст або оберіть дію:",
+                reply_markup=reply_markup,
+                parse_mode="Markdown"
+            )
+
+        except Exception as e:
+            logger.error(f"Помилка при перекладі: {e}")
+            await send_text(update, context, "❌ Помилка при перекладі. Спробуйте ще раз.")
+        finally:
+            await context.bot.delete_message(
+                chat_id=update.effective_chat.id,
+                message_id=waiting_message.message_id
+            )
+        return
+
+    if conversation_state == "recommend_genre":
+        genre = message_text.strip()
+        category = context.user_data.get("rec_category")
+
+        if not category:
+            await send_text(update, context, "Помилка: категорія не обрана. Використайте /recommend")
+            return
+
+        context.user_data["rec_genre"] = genre
+        context.user_data["rec_disliked"] = []
+
+        waiting_message = await send_text(update, context, "⏳ Шукаю найкращі рекомендації...")
+
+        try:
+            base_prompt = load_prompt("recommend")
+
+            prompt = f"""{base_prompt}
+
+        Порекомендуй одну річ у категорії "{category}" в жанрі "{genre}". 
+        Дай ОДНУ конкретну рекомендацію з коротким описом (2-3 речення).
+
+        Формат відповіді:
+        📌 Назва
+        Короткий опис чому це круто."""
+
+            response = await chatgpt_service.send_question(
+                prompt_text=prompt,
+                message_text=""
+            )
+            lines = response.split('\n')
+            recommendation_name = lines[0].replace('📌', '').strip() if lines else "Unknown"
+            context.user_data["rec_disliked"] = [recommendation_name]
+
+            buttons = {
+                'rec_dislike': '👎 Не подобається',
+                'start': '❌ Закінчити'
+            }
+
+            await send_text_buttons(
+                update,
+                context,
+                f"🎯 *Рекомендація ({category}):*\n\n{response}",
+                buttons
+            )
+
+        except Exception as e:
+            logger.error(f"Помилка при отриманні рекомендації: {e}")
+            await send_text(update, context, "❌ Виникла помилка при отриманні рекомендації.")
+
+        finally:
+            await context.bot.delete_message(
+            chat_id=update.effective_chat.id,
+            message_id=waiting_message.message_id
+            )
+        return
 
 
     if conversation_state == "gpt":
@@ -282,7 +331,6 @@ async def show_funny_response(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def translate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /translate - запускає режим перекладу"""
     from config import LANGUAGES
 
     context.user_data.clear()
@@ -307,7 +355,6 @@ async def translate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def translate_language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Вибір мови для перекладу"""
     from config import LANGUAGES
 
     query = update.callback_query
@@ -325,7 +372,6 @@ async def translate_language_selected(update: Update, context: ContextTypes.DEFA
 
 
 async def translate_change_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Зміна мови або завершення режиму перекладу"""
     from config import LANGUAGES
 
     query = update.callback_query
@@ -345,4 +391,126 @@ async def translate_change_language(update: Update, context: ContextTypes.DEFAUL
             f"✅ Мову змінено на: *{LANGUAGES[lang_code]}*\n\n"
             f"Надішліть текст для перекладу.",
             parse_mode="Markdown"
+        )
+
+
+async def recommend(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await send_image(update, context, "start")
+
+    categories = {
+        'rec_movies': '🎬 Фільми',
+        'rec_books': '📚 Книги',
+        'rec_music': '🎵 Музика',
+        'start': '❌ Закінчити'
+    }
+
+    await send_text_buttons(
+        update,
+        context,
+        "🎯 *Рекомендації від GPT*\n\nОберіть категорію для отримання рекомендацій:",
+        categories
+    )
+
+
+async def recommend_category_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+
+    if data == "start":
+        await start(update, context)
+        return
+
+    category_map = {
+        'rec_movies': 'фільми',
+        'rec_books': 'книги',
+        'rec_music': 'музику'
+    }
+
+    context.user_data["rec_category"] = category_map.get(data)
+    context.user_data["conversation_state"] = "recommend_genre"
+
+    category_emoji = {
+        'rec_movies': '🎬',
+        'rec_books': '📚',
+        'rec_music': '🎵'
+    }
+
+    await query.edit_message_text(
+        f"{category_emoji.get(data)} Ви обрали: *{category_map.get(data)}*\n\n"
+        f"Тепер введіть жанр, який вас цікавить.\n"
+        f"Наприклад: _комедія, фантастика, детектив, рок, джаз..._",
+        parse_mode="Markdown"
+    )
+
+
+async def recommend_dislike(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer("Шукаю інший варіант...")
+
+    category = context.user_data.get("rec_category")
+    genre = context.user_data.get("rec_genre")
+    disliked = context.user_data.get("rec_disliked", [])
+
+    if not category or not genre:
+        await query.edit_message_text("Помилка: дані втрачено. Використайте /recommend для початку.")
+        return
+
+    await query.edit_message_text("⏳ Шукаю нові рекомендації...")
+
+    try:
+        base_prompt = load_prompt("recommend")
+
+        disliked_text = ""
+        if disliked:
+            disliked_text = f"\n\nНЕ рекомендуй ці варіанти (вони вже не сподобались): {', '.join(disliked)}"
+
+
+        prompt = f"""{base_prompt}
+
+Порекомендуй одну річ у категорії "{category}" в жанрі "{genre}". 
+Дай ОДНУ конкретну рекомендацію з коротким описом (2-3 речення).{disliked_text}
+
+Формат відповіді:
+📌 Назва
+Короткий опис чому це круто."""
+
+        response = await chatgpt_service.send_question(
+            prompt_text=prompt,
+            message_text=""
+            )
+
+        lines = response.split('\n')
+        recommendation_name = lines[0].replace('📌', '').strip() if lines else "Unknown"
+
+        disliked.append(recommendation_name)
+        context.user_data["rec_disliked"] = disliked
+
+        await query.edit_message_text(
+            f"🎯 *Рекомендація ({category}):*\n\n{response}",
+            parse_mode="Markdown"
+        )
+        buttons = {
+            'rec_dislike': '👎 Не подобається',
+            'start': '❌ Закінчити'
+            }
+
+        keyboard = []
+        for key, value in buttons.items():
+            button = InlineKeyboardButton(str(value), callback_data=str(key))
+            keyboard.append([button])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="Оберіть дію:",
+            reply_markup=reply_markup
+        )
+
+    except Exception as e:
+        logger.error(f"Помилка при генерації рекомендації: {e}")
+        await query.edit_message_text(
+             "❌ Виникла помилка при генерації рекомендації. Спробуйте ще раз."
         )
